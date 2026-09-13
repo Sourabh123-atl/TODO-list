@@ -1,0 +1,4 @@
+- Classez une note en Référence depuis la boîte de réception, avec projet et domaine, et depuis le menu d’état de toute tâche.
+- La synchronisation ne se répète plus toutes les quelques secondes après la suppression de pièces jointes ailleurs ; une interruption libère le verrou et un emplacement non vérifiable nomme le fichier.
+- iCloud synchronise à nouveau les bibliothèques avec une date de début de projet et nomme la vraie cause d’un refus.
+- Vue Semaine sur cinq jours, traductions corrigées.

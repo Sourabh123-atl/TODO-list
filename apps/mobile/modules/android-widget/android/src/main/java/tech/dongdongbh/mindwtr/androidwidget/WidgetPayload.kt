@@ -1,0 +1,410 @@
+package tech.dongdongbh.mindwtr.androidwidget
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
+
+/**
+ * The widget payload the React Native side publishes (widget-service.ts,
+ * `AndroidTasksWidgetPayload`), shared by every widget kind. Every string the
+ * widgets or the quick-capture dialog show is localized in TypeScript; Kotlin
+ * only lays it out. Unknown keys (such as a future `sections` array) are ignored.
+ */
+data class WidgetPayload(
+  val headerTitle: String,
+  val dateLabel: String,
+  val inboxLabel: String,
+  val inboxCount: Int,
+  val subtitle: String,
+  val items: List<Item>,
+  val sections: List<Section>,
+  val lists: Map<String, ListPayload>,
+  val listTitles: Map<String, String>,
+  val savedFilters: List<SavedFilterOption>,
+  val emptyMessage: String,
+  val focusUri: String,
+  val themeMode: String,
+  val palette: Palette?,
+  val quickCapture: QuickCaptureLabels,
+  val taskPeek: TaskPeekLabels,
+) {
+  data class Item(
+    val id: String,
+    val title: String,
+    val dueLabel: String?,
+    val dueEmphasis: Boolean,
+    val openUri: String?,
+    val priorityColor: Int?,
+    val contextLabel: String?,
+    val identityColor: Int?,
+    val dueTone: DueTone,
+    // Only the task sheet reads the rest; absent on rows that carry none.
+    val description: String?,
+    val contexts: List<String>,
+    val tags: List<String>,
+    val startLabel: String?,
+    val priorityLabel: String?,
+  )
+
+  enum class DueTone { OVERDUE, TODAY, NORMAL }
+
+  /** A Focus screen section (#1173): title plus its rows, in screen order. */
+  data class Section(val title: String, val detail: String?, val items: List<Item>)
+
+  /** One list a placed Tasks widget can show (#1173). */
+  data class ListPayload(val title: String, val dateLabel: String?, val sections: List<Section>, val items: List<Item>)
+
+  data class SavedFilterOption(val id: String, val name: String)
+
+  data class Palette(
+    val background: Int,
+    val card: Int,
+    val text: Int,
+    val mutedText: Int,
+    val accent: Int,
+    val onAccent: Int,
+    val border: Int,
+    val warning: Int,
+    val headerWash: Int,
+  )
+
+  data class TaskPeekLabels(
+    val complete: String,
+    val open: String,
+    val start: String,
+    val due: String,
+    val priority: String,
+  )
+
+  data class QuickCaptureLabels(
+    val title: String,
+    val placeholder: String,
+    val save: String,
+    val cancel: String,
+    val added: String,
+    val audioEnabled: Boolean = false,
+    val audioRecord: String,
+    val audioStop: String,
+    val audioRecording: String,
+    val audioReady: String,
+    val audioSaved: String,
+    val audioError: String,
+    val audioPermissionDenied: String,
+  )
+
+  /** True when the launcher's own day/night resources should color the widget. */
+  val usesSystemColors: Boolean get() = palette == null || themeMode == "system"
+
+  /** Every task id the payload can draw, across the flat list, the sections and every named list. */
+  fun allTaskIds(): Set<String> {
+    val ids = HashSet<String>()
+    items.forEach { ids.add(it.id) }
+    sections.forEach { section -> section.items.forEach { ids.add(it.id) } }
+    lists.values.forEach { list ->
+      list.items.forEach { ids.add(it.id) }
+      list.sections.forEach { section -> section.items.forEach { ids.add(it.id) } }
+    }
+    ids.remove("")
+    return ids
+  }
+
+  /** The row a tap names, wherever the payload carries it; null when the payload has moved on. */
+  fun itemFor(taskId: String): Item? {
+    if (taskId.isEmpty()) return null
+    items.firstOrNull { it.id == taskId }?.let { return it }
+    sections.forEach { section -> section.items.firstOrNull { it.id == taskId }?.let { return it } }
+    lists.values.forEach { list ->
+      list.items.firstOrNull { it.id == taskId }?.let { return it }
+      list.sections.forEach { section -> section.items.firstOrNull { it.id == taskId }?.let { return it } }
+    }
+    return null
+  }
+
+  /** A list the chooser offers, named even before the app has built its rows. */
+  fun titleFor(listId: String): String? =
+    lists[listId]?.title
+      ?: listTitles[listId]
+      ?: savedFilters.firstOrNull { listId == WidgetListStore.FILTER_PREFIX + it.id }?.name
+
+  /**
+   * The list a widget should draw. A selection the app has not published yet
+   * (a project just picked in the chooser) draws under its own name and empty,
+   * never as the Focus rows wearing another list's title; an id we cannot name
+   * at all falls back to Focus.
+   */
+  fun listFor(listId: String): ListPayload =
+    lists[listId]
+      ?: (if (listId == WidgetListStore.DEFAULT_LIST) null else titleFor(listId)?.let { ListPayload(it, null, emptyList(), emptyList()) })
+      ?: lists[WidgetListStore.DEFAULT_LIST]
+      ?: ListPayload(headerTitle, dateLabel, sections, items)
+
+  companion object {
+    const val DEFAULT_FOCUS_URI = "mindwtr:///focus"
+    const val MAX_ITEMS = 50
+
+    val EMPTY = WidgetPayload(
+      headerTitle = "Today's Focus",
+      dateLabel = "",
+      inboxLabel = "Inbox",
+      inboxCount = 0,
+      subtitle = "Inbox: 0",
+      items = emptyList(),
+      sections = emptyList(),
+      lists = emptyMap(),
+      listTitles = emptyMap(),
+      savedFilters = emptyList(),
+      emptyMessage = "All clear",
+      focusUri = DEFAULT_FOCUS_URI,
+      themeMode = "system",
+      palette = null,
+      quickCapture = QuickCaptureLabels(
+        title = "Quick capture",
+        placeholder = "Add task to inbox...",
+        save = "Save",
+        cancel = "Cancel",
+        added = "Task added to Mindwtr.",
+        audioEnabled = false,
+        audioRecord = "Record audio",
+        audioStop = "Stop recording",
+        audioRecording = "Recording...",
+        audioReady = "Recording ready to save.",
+        audioSaved = "Saved. Audio will be transcribed when you open Mindwtr.",
+        audioError = "We could not record audio. Please try again.",
+        audioPermissionDenied = "Enable microphone access to record audio captures.",
+      ),
+      taskPeek = TaskPeekLabels(
+        complete = "Complete",
+        open = "Open",
+        start = "Start",
+        due = "Due date",
+        priority = "Priority",
+      ),
+    )
+
+    fun parse(json: String): WidgetPayload? {
+      val root = try {
+        JSONObject(json)
+      } catch (error: JSONException) {
+        return null
+      }
+      val defaults = EMPTY
+      val items = parseItems(root.optJSONArray("items"))
+      val sections = parseSections(root.optJSONArray("sections"))
+      val lists = LinkedHashMap<String, ListPayload>()
+      root.optJSONObject("lists")?.let { listsJson ->
+        for (key in listsJson.keys()) {
+          val list = listsJson.optJSONObject(key) ?: continue
+          lists[key] = ListPayload(
+            title = list.stringOr("title", key),
+            dateLabel = list.optString("dateLabel").trim().takeIf { it.isNotEmpty() && !list.isNull("dateLabel") },
+            sections = parseSections(list.optJSONArray("sections")),
+            items = parseItems(list.optJSONArray("items")),
+          )
+        }
+      }
+      val listTitles = LinkedHashMap<String, String>()
+      root.optJSONObject("listTitles")?.let { titles -> for (key in titles.keys()) listTitles[key] = titles.optString(key) }
+      val savedFilters = ArrayList<SavedFilterOption>()
+      root.optJSONArray("savedFilters")?.let { list ->
+        for (index in 0 until list.length()) {
+          val filter = list.optJSONObject(index) ?: continue
+          val id = filter.optString("id").trim()
+          val name = filter.optString("name").trim()
+          if (id.isEmpty() || name.isEmpty()) continue
+          savedFilters.add(SavedFilterOption(id, name))
+        }
+      }
+      // Only the app's own routes may be launched from a tap.
+      val focusUri = appUriOrNull(root.optString("focusUri")) ?: DEFAULT_FOCUS_URI
+      val labels = root.optJSONObject("quickCapture")
+      val quickCapture = QuickCaptureLabels(
+        title = labels.stringOr("title", defaults.quickCapture.title),
+        placeholder = labels.stringOr("placeholder", defaults.quickCapture.placeholder),
+        save = labels.stringOr("save", defaults.quickCapture.save),
+        cancel = labels.stringOr("cancel", defaults.quickCapture.cancel),
+        added = labels.stringOr("added", defaults.quickCapture.added),
+        audioEnabled = labels?.optBoolean("audioEnabled", false) ?: false,
+        audioRecord = labels.stringOr("audioRecord", defaults.quickCapture.audioRecord),
+        audioStop = labels.stringOr("audioStop", defaults.quickCapture.audioStop),
+        audioRecording = labels.stringOr("audioRecording", defaults.quickCapture.audioRecording),
+        audioReady = labels.stringOr("audioReady", defaults.quickCapture.audioReady),
+        audioSaved = labels.stringOr("audioSaved", defaults.quickCapture.audioSaved),
+        audioError = labels.stringOr("audioError", defaults.quickCapture.audioError),
+        audioPermissionDenied = labels.stringOr("audioPermissionDenied", defaults.quickCapture.audioPermissionDenied),
+      )
+      val peek = root.optJSONObject("taskPeek")
+      val taskPeek = TaskPeekLabels(
+        complete = peek.stringOr("complete", defaults.taskPeek.complete),
+        open = peek.stringOr("open", defaults.taskPeek.open),
+        start = peek.stringOr("start", defaults.taskPeek.start),
+        due = peek.stringOr("due", defaults.taskPeek.due),
+        priority = peek.stringOr("priority", defaults.taskPeek.priority),
+      )
+      val inboxLabel = root.stringOr("inboxLabel", defaults.inboxLabel)
+      val inboxCount = maxOf(0, root.optInt("inboxCount", 0))
+      return WidgetPayload(
+        headerTitle = root.stringOr("headerTitle", defaults.headerTitle),
+        dateLabel = root.stringOr("dateLabel", defaults.dateLabel),
+        inboxLabel = inboxLabel,
+        inboxCount = inboxCount,
+        // Payloads written before #1173 had no subtitle; keep their exact
+        // Inbox count rather than showing a blank header chip.
+        subtitle = root.stringOr("subtitle", "$inboxLabel: $inboxCount"),
+        items = items,
+        sections = sections,
+        lists = lists,
+        listTitles = listTitles,
+        savedFilters = savedFilters,
+        emptyMessage = root.stringOr("emptyMessage", defaults.emptyMessage),
+        focusUri = focusUri,
+        themeMode = root.stringOr("themeMode", "system"),
+        palette = parsePalette(root.optJSONObject("palette")),
+        quickCapture = quickCapture,
+        taskPeek = taskPeek,
+      )
+    }
+
+    private fun parseSections(json: JSONArray?): List<Section> {
+      val sections = ArrayList<Section>()
+      if (json == null) return sections
+      for (index in 0 until json.length()) {
+        val section = json.optJSONObject(index) ?: continue
+        val sectionItems = parseItems(section.optJSONArray("items"))
+        if (sectionItems.isEmpty()) continue
+        sections.add(Section(section.stringOr("title", ""), section.optString("detail").trim().takeIf { it.isNotEmpty() && !section.isNull("detail") }, sectionItems))
+      }
+      return sections
+    }
+
+    private fun parseItems(json: JSONArray?): List<Item> {
+      val items = ArrayList<Item>()
+      if (json == null) return items
+      for (index in 0 until minOf(json.length(), MAX_ITEMS)) {
+        val item = json.optJSONObject(index) ?: continue
+        val title = item.optString("title").trim()
+        if (title.isEmpty()) continue
+        items.add(
+          Item(
+            id = item.optString("id").trim(),
+            title = title,
+            dueLabel = item.optString("dueLabel").trim().takeIf { it.isNotEmpty() && !item.isNull("dueLabel") },
+            dueEmphasis = item.optBoolean("dueEmphasis", false),
+            openUri = appUriOrNull(item.optString("openUri")),
+            priorityColor = parseHexColor(item.optString("priorityColor")),
+            contextLabel = item.optString("contextLabel").trim().takeIf { it.isNotEmpty() && !item.isNull("contextLabel") },
+            identityColor = parseHexColor(item.optString("identityColor")),
+            dueTone = when (item.optString("dueTone")) {
+              "overdue" -> DueTone.OVERDUE
+              "today" -> DueTone.TODAY
+              else -> if (item.optBoolean("dueEmphasis", false)) DueTone.TODAY else DueTone.NORMAL
+            },
+            description = item.optString("description").trim().takeIf { it.isNotEmpty() && !item.isNull("description") },
+            contexts = parseStrings(item.optJSONArray("contexts")),
+            tags = parseStrings(item.optJSONArray("tags")),
+            startLabel = item.optString("startLabel").trim().takeIf { it.isNotEmpty() && !item.isNull("startLabel") },
+            priorityLabel = item.optString("priorityLabel").trim().takeIf { it.isNotEmpty() && !item.isNull("priorityLabel") },
+          ),
+        )
+      }
+      return items
+    }
+
+    private fun parseStrings(json: JSONArray?): List<String> {
+      if (json == null) return emptyList()
+      val values = ArrayList<String>()
+      for (index in 0 until json.length()) {
+        val value = json.optString(index).trim()
+        if (value.isNotEmpty()) values.add(value)
+      }
+      return values
+    }
+
+    private fun parsePalette(json: JSONObject?): Palette? {
+      if (json == null) return null
+      val background = parseHexColor(json.optString("background")) ?: return null
+      val text = parseHexColor(json.optString("text")) ?: return null
+      return Palette(
+        background = background,
+        card = parseHexColor(json.optString("card")) ?: background,
+        text = text,
+        mutedText = parseHexColor(json.optString("mutedText")) ?: text,
+        accent = parseHexColor(json.optString("accent")) ?: text,
+        onAccent = parseHexColor(json.optString("onAccent")) ?: background,
+        border = parseHexColor(json.optString("border")) ?: (parseHexColor(json.optString("mutedText")) ?: text),
+        warning = parseHexColor(json.optString("warning")) ?: (parseHexColor(json.optString("accent")) ?: text),
+        headerWash = parseHexColor(json.optString("headerWash"))
+          ?: WidgetRenderer.withAlpha(parseHexColor(json.optString("accent")) ?: text, 0x2E),
+      )
+    }
+
+    fun appUriOrNull(value: String?): String? = value?.takeIf { it.startsWith("mindwtr:") }
+
+    /**
+     * `#RRGGBB` or `#RRGGBBAA` (CSS order, what core's getAccentTint writes) to
+     * an ARGB int; android.graphics.Color is a stub on the JVM.
+     */
+    fun parseHexColor(value: String?): Int? {
+      val hex = value?.trim()?.removePrefix("#") ?: return null
+      val digits = when (hex.length) {
+        6 -> "FF$hex"
+        8 -> hex.substring(6, 8) + hex.substring(0, 6)
+        else -> return null
+      }
+      return digits.toLongOrNull(16)?.toInt()
+    }
+
+    private fun JSONObject?.stringOr(key: String, fallback: String): String {
+      val value = this?.optString(key)?.trim()
+      return if (value.isNullOrEmpty()) fallback else value
+    }
+  }
+}
+
+/** The one place the payload JSON lives natively: SharedPreferences `mindwtr_widget` / `payload`. */
+object WidgetPayloadStore {
+  const val PREFS_NAME = "mindwtr_widget"
+  const val KEY_PAYLOAD = "payload"
+
+  fun readRaw(context: Context): String? =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_PAYLOAD, null)
+
+  fun read(context: Context): WidgetPayload =
+    readRaw(context)?.let { WidgetPayload.parse(it) } ?: WidgetPayload.EMPTY
+
+  fun write(context: Context, json: String) {
+    // commit(), not apply(): the widget provider and the dialog read this from
+    // other components right after the write.
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_PAYLOAD, json).commit()
+  }
+
+  /** The quick-capture dialog saved one Inbox item; show it before the app next publishes. */
+  fun incrementInboxCount(context: Context) {
+    val raw = readRaw(context) ?: return
+    val next = incrementInboxCount(raw) ?: return
+    write(context, next)
+  }
+
+  fun incrementInboxCount(json: String): String? {
+    val root = try {
+      JSONObject(json)
+    } catch (error: JSONException) {
+      return null
+    }
+    val inboxLabel = root.optString("inboxLabel").trim().ifEmpty { WidgetPayload.EMPTY.inboxLabel }
+    val previousCount = maxOf(0, root.optInt("inboxCount", 0))
+    val nextCount = previousCount + 1
+    val previousPrefix = "$inboxLabel: $previousCount"
+    val publishedSubtitle = root.optString("subtitle").trim()
+    val curatedSuffix = publishedSubtitle
+      .takeIf { it.startsWith(previousPrefix) }
+      ?.removePrefix(previousPrefix)
+      .orEmpty()
+    root.put("inboxCount", nextCount)
+    // Keep the RN-published curated hidden count while advancing the Inbox
+    // count immediately after native quick capture. A legacy or malformed
+    // subtitle safely falls back to Inbox only.
+    root.put("subtitle", "$inboxLabel: $nextCount$curatedSuffix")
+    return root.toString()
+  }
+}
